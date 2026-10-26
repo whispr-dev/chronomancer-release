@@ -1,0 +1,30 @@
+Chronomancer release kit (v8.2.0.0)
+===================================
+
+Folders
+  payload\    what gets shipped: Chronomancer.exe, wallpaper PNG, icon, README.md, LICENSE.txt (MIT)
+  installer\  Chronomancer.wxs (WiX v6 source), License.rtf, build.ps1
+  site\       the whispr.dev/chronomancer/ page (template; deploy fills in sizes + checksums)
+  deploy\     deploy-chronomancer.ps1 (runs on your PC) + install-on-server.sh (runs on sgp1)
+
+1) Build (on the Lenovo, in PowerShell):
+     cd D:\code\chronomancer-release\installer
+     powershell -ExecutionPolicy Bypass -File .\build.ps1
+   -> ..\dist\Chronomancer-8.2.0.0.msi
+      ..\dist\whispr.dev-Chronomancer-8.2.0.0-portable.zip
+      ..\dist\SHA256SUMS.txt
+   First run needs the .NET SDK:  winget install --id Microsoft.DotNet.SDK.8 -e
+   (then open a NEW PowerShell window before running build.ps1)
+
+2) Test the MSI on your own box:
+     msiexec /i ..\dist\Chronomancer-8.2.0.0.msi /l*v "%TEMP%\chrono.log"
+   Then uninstall from Settings > Apps and check %LOCALAPPDATA%\Programs\Chronomancer is gone.
+
+3) Publish the page + downloads:
+     cd ..\deploy
+     powershell -ExecutionPolicy Bypass -File .\deploy-chronomancer.ps1
+   -> https://whispr.dev/chronomancer/
+      (an existing copy, if any, is moved to ~/chronomancer-backup-<date> on sgp1)
+
+Next version: bump the THIRD number or higher (8.2.1.0, 8.3.0.0) and pass -Version to both scripts.
+Never change the UpgradeCode in Chronomancer.wxs.

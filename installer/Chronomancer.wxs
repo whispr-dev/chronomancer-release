@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  whisprer's Eternal Chronomancer - per-user MSI installer
+  Toolset: WiX v6.0.2 (pinned; v7 adds a build-time EULA gate). Build with build.ps1.
+
+  What this installer does
+  * Installs per-user into %LOCALAPPDATA%\Programs\Chronomancer (no admin prompt).
+    Per-user matters: Chronomancer writes its world-clock .json next to the exe,
+    so it must live somewhere the user can write.
+  * Shows the MIT license, then an Options page with "Start with Windows" (on by default).
+  * Adds a Start menu shortcut, and a Startup-folder shortcut if chosen.
+  * Remembers the start-with-Windows choice across upgrades (HKCU\Software\whispr.dev\Chronomancer).
+  * Closes a running Chronomancer before upgrading or uninstalling it.
+  * Proper uninstall from Settings > Apps, including the .json settings file
+    (but NOT during an upgrade, so your world-clock choice survives updates).
+
+  Version rule (Windows Installer only compares the first THREE fields):
+  8.2.0.0 -> 8.2.0.1 is NOT seen as newer. Bump the third field or higher: 8.2.1.0, 8.3.0.0.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <?ifndef ProductVersion ?>
+    <?define ProductVersion = "8.2.0.0" ?>
+  <?endif?>
+  <?ifndef PayloadDir ?>
+    <?define PayloadDir = "..\payload" ?>
+  <?endif?>
+
+  <!-- UpgradeCode: NEVER change this. It is how future versions find and replace this one. -->
+  <Package Name="whisprer's Eternal Chronomancer"
+           Manufacturer="whispr.dev"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="4CB8B86A-FD58-41CE-BD00-13168BB73C81"
+           Scope="perUser"
+           Language="1033"
+           Compressed="yes">
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed. Uninstall it first if you really want this older version." />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- ===== Add/Remove Programs (Settings > Apps) entry ===== -->
+    <Icon Id="ChronoIcon.ico" SourceFile="$(var.PayloadDir)\Chronomancer.ico" />
+    <Property Id="ARPPRODUCTICON" Value="ChronoIcon.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://whispr.dev/chronomancer/" />
+    <Property Id="ARPHELPLINK" Value="https://whispr.dev/chronomancer/" />
+    <Property Id="ARPCONTACT" Value="chronosupport@whispr.dev" />
+
+    <!-- ===== Start-with-Windows choice =====
+         AUTOSTART_CHOICE always holds "1" or "0" (never empty), so it survives the
+         hand-off from the UI to the install engine. AUTOSTART is only the checkbox.
+         Silent install without autostart:  msiexec /i Chronomancer-x.msi /qn AUTOSTART_CHOICE=0 -->
+    <Property Id="AUTOSTART_CHOICE" Value="1" Secure="yes" />
+    <Property Id="CHRONO_UI_RAN" Secure="yes" />
+
+    <Property Id="PREV_AUTOSTART_CHOICE">
+      <RegistrySearch Id="srchPrevAutoStart" Root="HKCU" Key="Software\whispr.dev\Chronomancer" Name="AutoStart" Type="raw" />
+    </Property>
+    <Property Id="CHRONO_PREV_DIR">
+      <RegistrySearch Id="srchPrevInstallDir" Root="HKCU" Key="Software\whispr.dev\Chronomancer" Name="InstallDir" Type="raw" />
+    </Property>
+
+    <SetProperty Id="CHRONO_UI_RAN" Value="1" Sequence="ui" Before="AppSearch" />
+    <SetProperty Action="RestoreAutostartUi" Id="AUTOSTART_CHOICE" Value="[PREV_AUTOSTART_CHOICE]"
+                 Sequence="ui" After="AppSearch" Condition="PREV_AUTOSTART_CHOICE" />
+    <SetProperty Action="RestoreAutostartExec" Id="AUTOSTART_CHOICE" Value="[PREV_AUTOSTART_CHOICE]"
+                 Sequence="execute" After="AppSearch" Condition="PREV_AUTOSTART_CHOICE AND NOT CHRONO_UI_RAN" />
+    <SetProperty Id="AUTOSTART" Value="1" Sequence="ui" After="RestoreAutostartUi"
+                 Condition="AUTOSTART_CHOICE = &quot;1&quot;" />
+
+    <!-- ===== Finish page: launch checkbox + wallpaper tip ===== -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Chronomancer now" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Sequence="ui" After="CostFinalize"
+                 Value="Tip: for the matching backdrop, open [INSTALLFOLDER] in File Explorer, right-click Chronomancer-Wallpaper.png and choose Set as desktop background." />
+
+    <Property Id="WixShellExecTarget" Value="[#ChronoExe]" />
+    <CustomActionRef Id="Wix4ShellExec_X64" />
+
+    <!-- ===== Close a running copy before files are touched =====
+         WM_CLOSE first; anything still alive after 3 s is terminated.
+         Re-sequenced to run just before RemoveFiles, so an uninstall never meets a locked exe.
+         (It must stay after InstallInitialize: its terminate step is a deferred action, and
+         scheduling one earlier fails with error 2762. During upgrades the old version's own
+         copy of this action closes the app inside its uninstall, which runs before ours.) -->
+    <util:CloseApplication Id="CloseChronomancer" Target="Chronomancer.exe"
+                           CloseMessage="yes" RebootPrompt="no" TerminateProcess="0" Timeout="3" />
+    <InstallExecuteSequence>
+      <Custom Action="override Wix4CloseApplications_X64" Before="RemoveFiles" Condition="VersionNT &gt; 400" />
+    </InstallExecuteSequence>
+
+    <!-- ===== Files and shortcuts =====
+         Per-user rules (ICE38/ICE43/ICE64): every component uses an HKCU registry value as its
+         KeyPath, and every folder created in the profile has a RemoveFolder. -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="UserProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Chronomancer">
+
+          <!-- Explicit Guid: WiX can't auto-generate one for a component holding files AND a registry KeyPath.
+               Never change it, or upgrades will orphan the old files. -->
+          <Component Id="cmpApp" Guid="6B9DF20D-B41F-45E7-A5C5-FB040B26D184">
+            <File Id="ChronoExe" Source="$(var.PayloadDir)\Chronomancer.exe" KeyPath="no" />
+            <File Id="ChronoWallpaper" Source="$(var.PayloadDir)\Chronomancer-Wallpaper.png" KeyPath="no" />
+            <File Id="ChronoReadme" Source="$(var.PayloadDir)\README.md" KeyPath="no" />
+            <File Id="ChronoLicense" Source="$(var.PayloadDir)\LICENSE.txt" KeyPath="no" />
+
+            <RegistryValue Root="HKCU" Key="Software\whispr.dev\Chronomancer" Name="InstallDir"
+                           Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+            <RegistryValue Root="HKCU" Key="Software\whispr.dev\Chronomancer" Name="AutoStart"
+                           Type="string" Value="[AUTOSTART_CHOICE]" />
+
+            <RemoveFolder Id="rmInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+            <RemoveFolder Id="rmUserProgramsDir" Directory="UserProgramsDir" On="uninstall" />
+
+            <!-- Real uninstall only: sweep the folder, including the .json Chronomancer wrote.
+                 Skipped while an upgrade removes the old version, so settings survive. -->
+            <util:RemoveFolderEx Id="rmChronoSettings" Property="CHRONO_PREV_DIR" On="uninstall"
+                                 Condition="NOT UPGRADINGPRODUCTCODE" />
+          </Component>
+
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="cmpStartMenuShortcut">
+        <Shortcut Id="scStartMenu" Name="Chronomancer"
+                  Description="whisprer's Eternal Chronomancer - live desktop calendar clock"
+                  Target="[#ChronoExe]" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\whispr.dev\Chronomancer" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <StandardDirectory Id="StartupFolder">
+      <Component Id="cmpStartupShortcut" Condition="AUTOSTART_CHOICE = &quot;1&quot;">
+        <Shortcut Id="scStartup" Name="Chronomancer"
+                  Description="Starts Chronomancer when you sign in to Windows"
+                  Target="[#ChronoExe]" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\whispr.dev\Chronomancer" Name="StartupShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Chronomancer" Level="1">
+      <ComponentRef Id="cmpApp" />
+      <ComponentRef Id="cmpStartMenuShortcut" />
+      <ComponentRef Id="cmpStartupShortcut" />
+    </Feature>
+
+    <!-- ===== Installer UI =====
+         Welcome -> License -> Options (start with Windows) -> Ready -> Progress -> Finish.
+         Built from the stock WixUI dialogs plus one custom Options dialog. -->
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+
+    <UI Id="ChronoUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Dialog Id="ChronoOptionsDlg" Width="370" Height="270" Title="!(loc.InstallDirDlg_Title)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="373" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="373" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Options" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="Choose how Chronomancer starts." />
+
+        <Control Id="AutoStartCheckBox" Type="CheckBox" X="20" Y="62" Width="330" Height="18" CheckBoxValue="1" Property="AUTOSTART"
+                 Text="Start Chronomancer automatically when I sign in to Windows" />
+        <Control Id="AutoStartHelp" Type="Text" X="36" Y="82" Width="314" Height="40" NoPrefix="yes"
+                 Text="You can change this later in Settings &gt; Apps &gt; Startup." />
+        <Control Id="WhereText" Type="Text" X="20" Y="130" Width="330" Height="60" NoPrefix="yes"
+                 Text="Chronomancer installs just for you, in your user profile (no administrator password needed). It adds a Chronomancer shortcut to the Start menu." />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="Wix4ShellExec_X64" Order="1"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LicenseAgreementDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="ChronoOptionsDlg" Condition="LicenseAccepted = &quot;1&quot;" />
+
+      <Publish Dialog="ChronoOptionsDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" />
+      <Publish Dialog="ChronoOptionsDlg" Control="Next" Property="AUTOSTART_CHOICE" Value="1" Order="1" Condition="AUTOSTART" />
+      <Publish Dialog="ChronoOptionsDlg" Control="Next" Property="AUTOSTART_CHOICE" Value="0" Order="2" Condition="NOT AUTOSTART" />
+      <Publish Dialog="ChronoOptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ChronoOptionsDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+
+      <Property Id="ARPNOMODIFY" Value="1" />
+    </UI>
+
+    <UIRef Id="WixUI_Common" />
+  </Package>
+</Wix>
